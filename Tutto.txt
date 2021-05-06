@@ -1,0 +1,536 @@
+#include<opencv2/opencv.hpp>
+#include<iostream>
+
+using namespace std;
+using namespace cv;
+
+void sharpay(Mat& src, Mat& lap, float k = 0.0f)
+{
+    src.convertTo(src, CV_32F);
+    lap.convertTo(lap, CV_32F);
+    src = src + k * lap;
+}
+
+cv::Mat Correlazione(cv::Mat image, cv::Mat kernel)
+{
+    Mat output = Mat(image.dims, image.size, image.type());
+    int range = floor(kernel.rows / 2);
+    Mat copia;
+    Mat imagepad;
+    copyMakeBorder(image, imagepad, range, range, range, range, BORDER_CONSTANT, Scalar(0));
+
+    for (int i = range; i < image.rows + range; i++)
+    {
+        for (int j = range; j < image.cols + range; j++)
+        {
+            copia = kernel.mul(imagepad(cv::Range(i - range, i + range + 1), cv::Range(j - range, j + range + 1)));
+            image.at<int>(i - range, j - range) = sum(copia)[0];
+        }
+    }
+
+    cout << "sono qui" << endl;
+    return output;
+
+}
+
+cv::Mat FiltroLaplaciano(cv::Mat& image)
+{
+    //Creo un immagine clone che diventerà l'immagine con filtro laplaciano per intero
+    Mat copyImage = image.clone();
+    //assegno il valore del contributo che deve dare il filtro
+    const float k = 0.8f; //valore che può assumere 0<k<1
+    //creo il filtro 45*
+    int filter45[3][3] = { {-1,-1,-1},{-1,8,-1},{-1,-1,-1} };
+    Mat filter = Mat(3, 3, CV_32S, filter45);
+    //Effettuo una riduzione del rumore
+    GaussianBlur(image, image, Size(3, 3), 0, 0, BORDER_DEFAULT);
+    //Converto l'immagine in Shorts per poter fare le operazioni nella correlazione
+    image.convertTo(image, CV_32S);
+    Correlazione(image, filter);
+    //In sharpay applico l'immagine laplaciana sulla copia con un contributo pari a k
+    sharpay(copyImage, image, k);
+    //riporto l'immagine in uchar per poter effettuare la visualizzazione
+    copyImage.convertTo(copyImage, CV_8U);
+    return copyImage;
+}
+
+cv::Mat ZeroCrossing(cv::Mat& image)
+{
+    double maximage;
+    minMaxLoc(image, NULL, &maximage, NULL, NULL);
+    float th = maximage * 0.095;
+    Mat padded;
+    bool flag;
+    copyMakeBorder(image, padded, 1, 1, 1, 1,BORDER_CONSTANT, Scalar(0));
+    Mat risultato = Mat::zeros(image.size(),image.type());
+    for (int i = 1; i < image.rows; i++)
+    {
+        for (int j = 1; j < image.cols; j++)
+        {
+            float massimo = padded.at<float>(i, j);
+            float minimo = padded.at<float>(i, j);
+            for (int k = -1; k < 2; k++)
+            {
+                for (int t = -1; t < 2; t++)
+                {
+                    if (padded.at<float>(i + k, j + t)  > massimo)
+                    {
+                        massimo = padded.at<float>(i + k, j + t);
+                    }
+                    if (padded.at<float>(i + k, j + t) < minimo)
+                    {
+                        minimo = padded.at<float>(i + k, j + t);
+                    }
+                }
+            }
+
+            if (padded.at<float>(i, j) >= 0)
+            {
+                
+                flag = minimo < 0 ? true : false;
+            }
+            else
+            {
+                flag = massimo > 0 ? true : false;
+            }
+            if (abs(massimo - minimo) > th && flag == true)
+            {
+                
+                risultato.at<float>(i, j) = 255;
+            }
+        }
+    }
+    return risultato;
+}
+
+void NonMaximaSuppression(Mat &mg, Mat &Orientation, Mat &Nms)
+{
+    float angolo;
+    for (int i = 1; i < mg.rows - 1; i++)
+    {
+        for (int j = 1; j < mg.cols - 1; j++)
+        {
+            double m = mg.at<uchar>(i, j);
+            angolo = Orientation.at<float>(i, j);
+            angolo = angolo >= 180 ? (angolo - 360) : angolo;
+            
+            
+
+            if (-22.5 <= angolo <= 22.5 || 157.5 <= angolo || angolo <= -157.5) {
+                if (m > mg.at<uchar>(i, j - 1) && m > mg.at<uchar>(i, j + 1)) 
+                    Nms.at<uchar>(i, j) = m;
+            }
+            else if (-67.5 <= angolo <= -22.5 || 112.5 <= angolo <= 157.5) {
+                if (m > mg.at<uchar>(i - 1, j - 1) && m > mg.at<uchar>(i + 1, j + 1))
+                    Nms.at<uchar>(i, j) = m;
+            }
+            else if (-112.5 <= angolo <= -67.5 || 67.5 <= angolo <= 112.5) {
+                if (m > mg.at<uchar>(i - 1, j) && m > mg.at<uchar>(i + 1, j))
+                    Nms.at<uchar>(i, j) = m;
+            }
+            else if (-157.5 <= angolo <= -112.5 || 22.5 <= angolo <= 67.5) {
+                if (m > mg.at<uchar>(i - 1, j + 1) && m > mg.at<uchar>(i + 1, j - 1))
+                    Nms.at<uchar>(i, j) = m;
+            }
+        }
+    }
+}
+
+void Isteresi(Mat& image, Mat& output, int lth, int hth)
+{
+    for (int i = 2; i< image.rows -2; i++)
+        for (int j = 2; j < image.cols -2; j++)
+        
+            if (image.at<uchar>(i, j) > hth)
+            {
+                output.at<uchar>(i, j) = 255;
+            }
+            else if (image.at<uchar>(i, j) < lth)
+            {
+                output.at<uchar>(i, j) = 0;
+            }
+            else if ((image.at<uchar>(i, j) < hth) && (image.at<uchar>(i, j) > lth))
+            {
+                for (int k = -1; k < 2; k++)
+                {
+                    for (int l = -1; l < 2; l++)
+                    {
+                        if (image.at<uchar>(i + k, j + l) > hth)
+                        {
+                            output.at<uchar>(i, j) = 255;
+                        }
+                    }
+                }
+            }
+        
+}
+
+void MaximaSupression(Mat imageAlfa, Mat imageMag, Mat& imageMS)
+{
+    float p, px1, px2, pxi, pmax;
+    normalize(imageAlfa, imageAlfa, 0, 180, NORM_MINMAX, CV_32F);
+    for (int i = 1; i < imageAlfa.rows - 1; i++)
+    {
+        for (int j = 1; j < imageAlfa.cols - 1; j++)
+        {
+
+            p = imageAlfa.at<float>(i, j);
+            pxi = imageMag.at<float>(i, j);
+            /* I casi */
+
+            /* Primo caso edge orizzontale */
+            if ((p >= 0.0f && p <= 22.5f) || (p > 157.5 && p <= 180.0f))
+            {
+                //Vediamo sopra e sotto
+                px1 = imageMag.at<float>(i - 1, j);
+                px2 = imageMag.at<float>(i + 1, j);
+
+                if (pxi > px1 && pxi > px2)
+                {
+                    imageMS.at<float>(i, j) = pxi;
+                }
+            }
+            /* Secondo caso edge +45 gradi */
+            else if (p <= 157.5f && p > 112.5f)
+            {
+                px1 = imageMag.at<float>(i + 1, j - 1);
+                px2 = imageMag.at<float>(i - 1, j + 1);
+
+                if (pxi > px1 && pxi > px2)
+                {
+                    imageMS.at<float>(i, j) = pxi;
+                }
+            }
+            /* Terzo caso edge verticale */
+            else if (p > 67.5f && p <= 112.5f)
+            {
+                px1 = imageMag.at<float>(i, j - 1);
+                px2 = imageMag.at<float>(i, j + 1);
+                if (pxi > px1 && pxi > px2)
+                {
+                    imageMS.at<float>(i, j) = pxi;
+                }
+            }
+            /* Quarto caso edge -45 gradi */
+            else if (p > 22.5f && p <= 67.5f)
+            {
+                px1 = imageMag.at<float>(i - 1, j - 1);
+                px2 = imageMag.at<float>(i + 1, j + 1);
+                if (pxi > px1 && pxi > px2)
+                {
+                    imageMS.at<float>(i, j) = pxi;
+                }
+            }
+        }
+    }
+}
+
+cv::Mat MyCanny(Mat image)
+{
+    Mat gaussiana;
+    GaussianBlur(image, gaussiana, Size(3,3), 0, 0);
+
+    Mat Dx;
+    Sobel(gaussiana, Dx, CV_32F, 1, 0);
+    Mat Dy;
+    Sobel(gaussiana, Dy, CV_32F, 0, 1);
+
+    Mat Mag, Dx2, Dy2;
+    pow(Dx, 2,Dx2);
+    pow(Dy, 2,Dy2);
+    sqrt(Dx2+Dy2, Mag);
+
+
+    
+
+    Mat Orientation;
+    phase(Dx, Dy, Orientation, true);
+
+    Mat Nms = Mat::zeros(Mag.rows, Mag.cols, CV_8U);
+
+    normalize(Mag, Mag, 0, 255, NORM_MINMAX, CV_8U);
+    NonMaximaSuppression(Mag,Orientation,Nms);
+   // MaximaSupression(Orientation, Mag, Nms);
+
+    Mat output = Mat::zeros(Mag.rows,Mag.cols,CV_8U);
+
+
+    double max;
+    minMaxLoc(Nms, NULL, &max, NULL, NULL);
+    Isteresi(Nms, output, 0, 50);
+
+
+    imshow("gaussiana", gaussiana);
+    imshow("Nms", Nms);
+    return output;
+}
+
+cv::Mat MyHarris(Mat src, int kernel, int k, int threshold)
+{
+    Mat Dx, Dy;
+    Sobel(src, Dx, CV_32F, 1, 0, kernel, BORDER_DEFAULT);
+    Sobel(src, Dy, CV_32F, 0, 1, kernel, BORDER_DEFAULT);
+
+    Mat Dx2, Dy2, DxDy;
+    pow(Dx, 2, Dx2);
+    pow(Dy, 2, Dy2);
+    multiply(Dx, Dy, DxDy);
+
+    Mat Dx2G, Dy2G, DxDyG;
+    GaussianBlur(Dx2, Dx2G, Size(7, 7), 2, 0, BORDER_DEFAULT);
+    GaussianBlur(Dy2, Dy2G, Size(7, 7), 0, 2, BORDER_DEFAULT);
+    GaussianBlur(DxDy, DxDyG, Size(7, 7), 2, 2, BORDER_DEFAULT);
+
+    //Determinante e Traccia
+
+    Mat x2y2, xy, Det, traccia, R;
+
+    multiply(Dx2G, Dy2G, x2y2);
+    multiply(DxDyG, DxDyG, xy);
+    Det = x2y2 - xy;
+    pow((Dx2G + Dy2G), 2, traccia);
+    R = Det - (k * traccia);
+
+    normalize(R, R, 0, 255,NORM_MINMAX, CV_32F);
+
+    Mat output = src.clone();
+
+    cvtColor(output, output, CV_GRAY2BGR);
+
+    for (int i = 0; i < src.rows; i++)
+    {
+        for (int j = 0; j < src.cols; j++)
+        {
+            if ((int)R.at<float>(i, j) > threshold)
+            {
+                circle(output, Point(j, i), 5, Scalar(0,0,255), 1, 8, 0);
+            }
+        }
+    }
+
+    return output;
+
+}
+
+
+
+Mat HoughRette(Mat image, Mat bw, int th)
+{
+    int distanzaMax = hypot(image.rows, image.cols); //è la distanza massima dell'immagine, l'ipotenusa.
+    Mat voti, imageCopy;
+    double rho, theta;
+    voti = Mat::zeros(distanzaMax * 2, 180, CV_8U);
+    for (int i = 0; i < bw.rows; i++)
+    {
+        for (int j = 0; j < bw.cols; j++)
+        {
+            if (bw.at<uchar>(i, j) > 250) //Controllo se è un edge, se sì, calcolo rho e theta
+            {
+                for (theta = 0; theta < 180; theta++)
+                {
+
+                    rho = distanzaMax + round(j * cos((theta - 90) * (CV_PI / 180)) + i * sin((theta - 90) * (CV_PI / 180))); //calcoliamo rho
+                    voti.at<uchar>(rho, theta)++;
+                }
+            }
+        }
+    }
+    imshow("voti", voti);
+    imwrite("voti.png", voti);
+    //Calcolati i voti, andiamo a sogliare le celle
+    imageCopy = image.clone();
+    double a, b;
+    Point pt1, pt2;
+    int x, y;
+    cvtColor(imageCopy, imageCopy, COLOR_GRAY2BGR);
+    for (int r = 0; r < voti.rows; r++)
+    {
+        for (int t = 0; t < voti.cols; t++)
+        {
+            if (voti.at<uchar>(r, t) > th)
+            {
+                rho = r - distanzaMax;
+                theta = (t - 90) * (CV_PI / 180);
+
+                Point p1, p2;
+                int x0 = cvRound(rho * cos(theta));
+                int y0 = cvRound(rho * sin(theta));
+                p1.x = cvRound(x0 + 1000 * (-sin(theta)));
+                p1.y = cvRound(y0 + 1000 * (cos(theta)));
+                p2.x = cvRound(x0 - 1000 * (-sin(theta)));
+                p2.y = cvRound(y0 - 1000 * (cos(theta)));
+                
+                line(imageCopy, p1, p2, Scalar(0, 255, 0), 1, 0);
+            }
+        }
+    }
+    
+    return imageCopy;
+}
+
+Mat HoughCerchi(Mat src, Mat canny, int r_min, int r_max, int threshold)
+{
+    Mat imageCopy;
+    imageCopy = src.clone();
+    int sizes[] = { canny.rows,canny.cols,r_max - r_min };
+    Mat votes = Mat (3, sizes, CV_8U, Scalar(0));
+
+    for (int x = 0; x < canny.rows; x++)
+    {
+        for (int y = 0; y < canny.cols; y++)
+        {
+            if (canny.at<uchar>(x,y) > 250)
+            {
+                for (int raggio = r_min; raggio < r_max; raggio++)
+                {
+                    for (int theta = 0; theta < 180; theta++)
+                    {
+                        int a = x - raggio * sin(theta * CV_PI / 180);
+                        int b = y - raggio * cos(theta * CV_PI / 180); 
+                        if (b > 0 && b < canny.cols && a > 0 && a < canny.rows)
+                        {
+                            votes.at<uchar>(a, b, raggio - r_min)++;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for (int a = 0; a < canny.rows; a++)
+    {
+        for (int b = 0; b < canny.cols; b++)
+        {
+           for (int r = r_min; r < r_max; r++)
+            {
+                if (votes.at<uchar>(a, b, r - r_min) > threshold)
+                {
+                    circle(imageCopy, Point(b, a), r, Scalar(0), 1, 8, 0);
+                }
+            }
+        }
+    }
+    return imageCopy;
+}
+
+int Otsu(Mat src)
+{
+    int n_pixel = 0;
+    float istogramma[256] = { 0.0f };
+
+    //Calcolo l'istogramma non normalizzato
+    for (int i = 0; i < src.rows; i++)
+    {
+        for (int j = 0; j < src.cols; j++)
+        {
+            istogramma[(src.at<uchar>(i, j))]++;
+            n_pixel++;
+        }
+    }
+    //normalizzo l'istogramma
+    for (int i = 0; i < 256; i++)
+    {
+        istogramma[i] = istogramma[i] / n_pixel;
+        
+    }
+
+    //calcolo la media globale
+    float intensita_globale = 0;
+
+    for (int i = 0; i < 256; i++)
+    {
+        intensita_globale += istogramma[i] * i;
+    }
+
+    cout << " intensita = " << intensita_globale << endl;
+    //ora trovo il k che permette la miglior sogliatura
+    int k = 0;
+    int soglia = 0;
+    float p1 = 0, mk = 0, qb = 0;
+    float max = 0;
+    for (k = 0; k < 256; k++)
+    {
+        //calcolo la k-esima somma cumulativa
+        p1 += istogramma[k];
+        //calcolo la k-esima media cumulativa
+        mk += istogramma[k] * k;
+        //calcolo la k-esima varianza interclasse
+        qb = pow(intensita_globale * p1 - mk, 2) / p1 * (1 - p1);
+        if (qb > max)
+        {
+            max = qb;
+            soglia = k;
+        }
+
+    }
+    
+    return soglia;
+}
+
+int main(int argc, char* argv[])
+{
+
+    const char* nome = argv[1];
+    Mat image = imread(nome, IMREAD_GRAYSCALE);
+    if (!image.data)
+    {
+        "Immagine non trovata";
+        return -1;
+    }
+
+    /*image.convertTo(image, CV_8U);
+
+    for (int i = 0; i < image.rows; i++)
+    {
+        for (int j = 0; j < image.cols; j++)
+        {
+            if (image.at<uchar>(i, j) > 230)
+            {
+                image.at<uchar>(i, j) = 255;
+            }
+            else
+            {
+                image.at<uchar>(i, j) = 0;
+            }
+        }
+    }
+
+    image.convertTo(image, CV_32F);
+
+    medianBlur(image, image, 3);*/
+
+    //Mat Canny;
+    //Canny = MyCanny(image);
+
+    //Mat Harris;
+    //Harris = MyHarris(image, 3, 0.04, 150);
+
+    GaussianBlur(image, image, Size(7, 7), 1, 1, BORDER_CONSTANT);
+    normalize(image, image, 0, 255, NORM_MINMAX, CV_8U);
+
+    int k = Otsu(image);
+    cout << k;
+    Mat otsu;
+    threshold(image, otsu, k, 255, THRESH_BINARY_INV);
+
+    //Mat canny;
+    //Canny(image, canny, 50, 120, 3);
+    //Mat HoughLines;
+    //HoughLines = HoughRette(image,canny, 70);
+    //Mat houghCerchi;
+    //houghCerchi = HoughCerchi(image, canny, 70, 120, 80);
+   
+    imshow("Immagine originale", image);
+    //imshow("Canny", canny);
+    //imshow("Harris", Harris);
+    //imshow("Hough", HoughLines);
+    //imshow("HoughCerchi", houghCerchi);
+    imshow("Otsu", otsu);
+
+    waitKey();
+    return 0;
+
+}
+
+
+
